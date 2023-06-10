@@ -1,0 +1,616 @@
+---
+title: "Bayesian Data Analysis Project"
+author: "David Ruffini"
+date: "07/06/2023"
+output:   
+  pdf_document: default
+  html_document: 
+    toc: true
+header-includes:
+  \usepackage{tikz}
+  \usetikzlibrary{positioning, arrows.meta}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(lme4)
+library(rstudioapi)
+library(ggplot2)
+library(dplyr)
+library(broom)
+library(gridExtra)
+library(SimDesign)
+library(coda)
+library(sbgcop)
+```
+\newpage
+\center\section{Introduction}
+In this analysis we are going to investigate how sleep deprivation affects reaction time and how different subjects could responds in a different manner in respect to others.
+
+\center\section{Sleep deprivation and reaction time}
+\begin{flushleft}
+What happens if you don't let people sleep for some days? That's the question \textit{Belenky et al (2003)} asked theirself and answered measuring the reaction time to a visual stimulus of each subject at each day of the experiment, ending up with the following data:
+\end{flushleft}
+\begin{tabular}{|c|c|c|}
+ \hline
+ Subject & Days & Reaction \\
+ \hline
+ 1 & 0 & 250 \\
+ \hline
+ 1 & 1 & 254 \\
+ \hline
+ 1 & 2 & 262 \\
+ \hline
+ ... & ... & ... \\
+ \hline
+ 4 & 0 & 264 \\
+ \hline
+ 4 & 1 & 264 \\
+ \hline
+ 4 & 2 & 280 \\
+ \hline
+ ... & ... & ... \\
+ \hline
+ 18 & 0 & 220 \\
+ \hline
+ 18 & 1 & 234 \\
+ \hline
+ 18 & 2 & 236 \\
+ \hline
+\end{tabular}
+
+\begin{flushleft}
+How was the study conducted? We have 18 subjects and 10 days of observation during which sleep deprivation was slowly imposed. Indeed the first two days were used to let people adapt and prepare to sleep less decreasing their usual resting hours, eventually since day three their hours in bed was reduced to 3 at day.
+\end{flushleft}
+
+
+\begin{flushleft}
+We can see that we don't have other informations on subject than theirs id, so we can't infer something about their personal characteristics and their influence on the reaction time.
+\end{flushleft}
+
+\newpage
+
+\begin{flushleft}
+Let's import the data:
+\end{flushleft}
+
+```{r data}
+data(sleepstudy)
+dati=sleepstudy
+set.seed(1)
+```
+
+\begin{flushleft}
+and setting them in a more approachable way:
+\end{flushleft}
+```{r each}
+#' preparation of data
+N=NULL
+Y=X=list()
+m=length(table(dati$Subject))
+id=levels(dati$Subject)
+for (j in 1:m) {
+  Y[[j]]=dati[dati[,3]==id[j], 1]
+  N[j]=sum(dati[,3]==id[j])
+  xj=dati[dati[,3]==id[j], 2]
+  xj2=xj^2
+  X[[j]]=cbind(rep(1,N[j]), xj, xj2)
+}
+```
+
+\section{Pooled OLS model}
+\begin{flushleft}
+The first thing we could do is trying to see how the general population's reaction time varies fitting a pooled OLS model:
+\end{flushleft}
+```{r pooled ols, fig.height = 4, fig.width = 10}
+#' fitting a pooled ols model 
+ols.pooled=lm(Reaction~Days, dati) 
+pooled.pred=predict(ols.pooled, Days=dati$Days)
+subject.col <- c("#FF0000", "#00FF00", "#0000FF", "#FFFF00", "#FF00FF", "#00FFFF", "#000000", "#FFFFFF", "#FFA500", "#800080", "#008000", "#000080", "#FFC0CB", "#800000", "#808080", "#FFFFF0", "#F0FFF0", "#F0FFFF")
+plot(dati$Days, dati$Reaction, type = "n", xlab="Days", ylab="Reaction")#, col=subject.col[dati$Subject])
+lines(dati$Days, pooled.pred)
+summary(ols.pooled)
+```
+
+\begin{flushleft}
+It looks like there is a positive mean effect: reaction times increase as days without sleeping increase. But our model has a low R-squared. What about residuals?
+\end{flushleft}
+```{r pooled variance, fig.height = 4, fig.width = 10}
+#' plotting variances
+ggplot(ols.pooled, aes(x=.fitted, y=.resid))+
+  geom_point()+
+  geom_abline(intercept=0, slope=0, color="red", linewidth=1)
+
+```
+\begin{flushleft}
+Observing residuals we can see that they're not close to zero and become larger approaching larger reaction times. The model suffers of some variability, probably due to the eterogeneity across subjects.
+What happens if we fit a linear regression for each subject?
+\end{flushleft}
+\section{OLS for each subject}
+```{r unpooled ols, fig.height = 4, fig.width = 10}
+
+#' fitting a linear OLS model for each subject
+#' fitting a quadratic OLS model for each subject
+#' obtaining BETA.LS[1]=intercept, BETA.LS[2]=slope and S2.LS=varinance for each subject
+S2.LS=BETA.LS=NULL
+fit.ols=R2.LS=list()
+days.cont=seq(min(xj), max(xj), by=0.1)
+react.pred.ols=list()
+for(j in 1:m) { #'togliendo l'intercetta le linee partono da 2 circa
+  fit.ols[[j]]<-lm(Y[[j]]~xj, as.data.frame(X[[j]])) #regressione lineare per ogni scuola usando xj
+  BETA.LS<-rbind(BETA.LS,c(fit.ols[[j]]$coef)) #la regressione lineare produce due coefficienti, uno relativo all'intera scuola quindi il punteggio medio della scuola (intercetta), uno relativo al coefficiente dello status socio-economico di quella scuola (slope)
+  S2.LS<-c(S2.LS, summary(fit.ols[[j]])$sigma^2) #varianza per ogni singola scuola
+  R2.LS[j]=summary(fit.ols[[j]])$r.squared
+  react.pred.ols[[j]]=predict(fit.ols[[j]], list(xj=days.cont))
+} 
+
+subject.col <- c("#FF0000", "#00FF00", "#0000FF", "#FFFF00", "#FF00FF", "#00FFFF", "#000000", "#FFFFFF", "#FFA500", "#800080", "#008000", "#000080", "#FFC0CB", "#800000", "#808080", "#FFFFF0", "#F0FFF0", "#F0FFFF")
+plot(dati$Days, dati$Reaction, type="n", xlab = "Days", ylab = "Reaction")  #,col=subject.col[dati$Subject])
+for(j in 1:m) {lines(days.cont, react.pred.ols[[j]])}#, col=subject.col[j])}
+lines(dati$Days, pooled.pred, col="red", lwd=2)
+```
+
+\begin{flushleft}
+We can already see that each subject has different type of reaction to the lack of sleep. The main trend is positive but heterogeneous: reaction times seems to increase differently according to the subject who receive the treatment. Moreover there is a clearly negative line, so for that individual it looks like that not sleeping improve his performance. The mean effect is the red line that is the result of the pooled OLS.
+\end{flushleft}
+
+```{r linear R2}
+R2.LS
+```
+\begin{flushleft}
+Clearly doing a regression line for each subjects increases our R-squared. Can we do better fitting a quadratic regression?
+\end{flushleft}
+\section{Quadratic pooled OLS}
+```{r pooled ols2, fig.height = 4, fig.width = 10}
+#' fitting a pooled quadratic ols model
+x=c(0,seq(0:9))
+dati$Days2=dati$Days^2 
+ols.pooled=lm(Reaction~Days+Days2, dati) 
+pooled.pred=predict(ols.pooled, list(Days=x, Days2=x^2))
+subject.col <- c("#FF0000", "#00FF00", "#0000FF", "#FFFF00", "#FF00FF", "#00FFFF", "#000000", "#FFFFFF", "#FFA500", "#800080", "#008000", "#000080", "#FFC0CB", "#800000", "#808080", "#FFFFF0", "#F0FFF0", "#F0FFFF")
+plot(dati$Days, dati$Reaction, type = "n", xlab="Days", ylab="Reaction")#, col=subject.col[dati$Subject])
+lines(x, pooled.pred)
+summary(ols.pooled)
+```
+
+\begin{flushleft}
+The pooled quadratic regression doesn't improve our R-squared so much, but we can see a big difference doing it for each subject.
+\begin{flushleft}
+
+\section{Quadratic OLS for each subject}
+```{r quadratic OLS, fig.height = 4, fig.width = 10}
+
+#' fitting a quadratic OLS model for each subject
+#' obtaining BETA.LS[1]=intercept, BETA.LS[2]=slope and S2.LS=varinance for each subject
+S2.LS=BETA.LS=NULL
+fit.ols=R2.LS=list()
+days.cont=seq(min(xj), max(xj), by=0.1) 
+react.pred.ols=list()
+for(j in 1:m) { #'togliendo l'intercetta le linee partono da 2 circa
+  fit.ols[[j]]<-lm(Y[[j]]~xj+xj2, as.data.frame(X[[j]])) #regressione lineare per ogni scuola usando xj
+  BETA.LS<-rbind(BETA.LS,c(fit.ols[[j]]$coef)) #la regressione lineare produce due coefficienti, uno relativo all'intera scuola quindi il punteggio medio della scuola (intercetta), uno relativo al coefficiente dello status socio-economico di quella scuola (slope)
+  S2.LS<-c(S2.LS, summary(fit.ols[[j]])$sigma^2) #varianza per ogni singola scuola
+  R2.LS[j]=summary(fit.ols[[j]])$r.squared
+  react.pred.ols[[j]]=predict(fit.ols[[j]], list(xj=days.cont, xj2=days.cont^2))
+} 
+
+
+
+subject.col <- c("#FF0000", "#00FF00", "#0000FF", "#FFFF00", "#FF00FF", "#00FFFF", "#000000", "#FFFFFF", "#FFA500", "#800080", "#008000", "#000080", "#FFC0CB", "#800000", "#808080", "#FFFFF0", "#F0FFF0", "#F0FFFF")
+plot(dati$Days, dati$Reaction, type="n", xlab = "Days", ylab="Reaction")#, col=subject.col[dati$Subject])
+for(j in 1:m) {lines(days.cont, react.pred.ols[[j]])}#, col=subject.col[j])}
+lines(x, pooled.pred, col="red", lwd=2)
+```
+
+\begin{flushleft}
+and see if our R-squared of each subject improve with respect to the linear regressions:
+\end{flushleft}
+
+```{r R2 quadratic}
+R2.LS
+```
+
+\begin{flushleft}
+As we expect the R-squared increased their values so let's keep working on the quadratic regression.
+\end{flushleft}
+
+
+\section{Bayesian approach}
+
+\begin{flushleft}
+We see that subjects answers differently to a lack of sleep so we should allow for some heterogeneity across individuals in our model. A possible way would be the use of a \textit{hierarchical linear model} where the coefficients \textbf{$\beta$} of each subject are sampled from a \textit{Multivariate Normal} with parameters \textbf{$\theta$} and \textbf{$\Sigma$}. We also have $\sigma^2$: a error variance of the reaction time that is common across all the subjects.
+The role of \textbf{$\theta$} and \textbf{$\Sigma$} is to spread informations accross the subjects, since these parameters are shared by all of them.
+We set a prior for each parameter assuming that we don't have any domain information so, cheating a bit, we use the OLS estimates pretending that's the information of someone with weak prior information, but unbiased.
+\end{flushleft}
+
+\subsection{Prior of \textbf{$\Sigma$}}
+```{r}
+#'prior distribution of iSigma
+#'distribution: Wishart
+#'parameters: eta0, S0
+#'Hoff page 200
+p=dim(X[[1]])[2] #'number of parameters
+Sigma=cov(BETA.LS) #'covariance of the least squares estimate
+iSigma=solve(Sigma)
+eta0=p+2 #Hoff page 200
+S0=cov(BETA.LS) #prior sum of squares matrix, Hoff page 200
+```
+
+\subsection{Prior of \textbf{$\theta$}}
+```{r}
+#'prior distribution of theta
+#'distribution: Multivariate Normal
+#'parameters: mu0, Lambda
+#'Hoff page 200
+theta=apply(BETA.LS, 2, mean)
+mu0=apply(BETA.LS, 2, mean) #average values of intercept, b1 and b2, Hoff page 200
+L0=cov(BETA.LS) 
+iL0=solve(L0)
+```
+\begin{flushleft}
+Let's check the diffusion of our prior and observe that is very diffuse. A prior like that isn't a very informative prior and remembering that we use OLS to assign priors we could say that is a sort of objective prior.
+\end{flushleft}
+```{r echo=FALSE, fig.height = 4, fig.width = 10}
+#'diffusion of the theta prior
+#'this is a really diffuse prior
+th1.prior=mu0[1]+c(-1.96,1.96)*sqrt(L0[1,1])
+th2.prior=mu0[2]+c(-1.96,1.96)*sqrt(L0[2,2])
+th3.prior=mu0[3]+c(-1.96,1.96)*sqrt(L0[3,3])
+
+min.th.prior=th1.prior[1]+th2.prior[1]*days.cont+th3.prior[1]*(days.cont^2)
+max.th.prior=th1.prior[2]+th2.prior[2]*days.cont+th3.prior[2]*(days.cont^2)
+
+plot(dati$Days, dati$Reaction, xlab="Days", ylab="Reaction time", ylim = c(-100, 600), type = "n")#, col=subject.col[dati$Subject])
+for(j in 1:m) {lines(days.cont, react.pred.ols[[j]])}#, col=subject.col[j])}
+lines(days.cont, min.th.prior, col="red")
+lines(days.cont, max.th.prior, col="red")
+legend(0, 100, legend=c("Prior", "OLS"), col=c("red", "black"), lty = 1)
+
+```
+
+
+\subsection{Prior distribution of \textbf{$\sigma^2$}}
+```{r}
+#'prior distribution of s2
+#'distribution: Inverse Gamma
+#'parameters: nu0, s20
+#'Hoff page 200
+s2=mean(S2.LS)
+s20=mean(S2.LS) #average of within-group sample variance
+nu0=1
+```
+
+\subsection{Sampling distribution of \textbf{$\beta$}}
+```{r}
+#'sampling distribution of BETA
+#'distribution: Multivariate Normale
+#'parameters: Ej, Vj
+BETA=BETA.LS
+
+```
+
+\subsection{Starting values}
+```{r}
+THETA.b=S2.b=NULL
+Sigma.ps=matrix(0,p,p)
+SIGMA.PS=NULL
+BETA.ps=BETA*0
+BETA.pp=NULL
+```
+
+\subsection{Gibbs sampler}
+\begin{flushleft}
+We have the following priors: \\
+$\theta\sim MN (\mu_0, \Lambda_0)$;\\
+$\Sigma\sim IW (\eta_0, \Sigma^{-1})$;\\
+$\sigma^2\sim IG (\nu_0/2, \nu_0*\sigma_0^2/2)$. \\
+Using a Gibbs sampler we can update our parameters drawing from the posterior distribution of the previous parameters:\\
+$(\theta|\beta_{1}, ...,\beta_{18}, \Sigma) \sim MN (\mu_m, \Lambda_0)$;\\
+$(\Sigma|\theta, \beta_{1}, ...,\beta_{18})\sim IW (\eta_0+m, [S_0+S_\theta]^-1)$;\\
+$\sigma^2\sim IG ([\nu_0+\sum N]/2, [\nu_0*\sigma^2_0 + SSR]/2)$.
+\end{flushleft}
+```{r}
+S=10000
+for (s in 1:S) {
+  #'update theta
+  Lm=solve(iL0+m*iSigma)
+  mum=Lm%*%(iL0%*%mu0+iSigma%*%apply(BETA,2,sum))
+  theta=t(rmvnorm(1,mum,Lm))
+  
+  #'update Sigma
+  mtheta=matrix(theta,m,p,byrow=TRUE)
+  iSigma=matrix(rWishart(1, eta0+m, solve(S0+t(BETA-mtheta)%*%(BETA-mtheta))), ncol=3) 
+  
+  #'update beta_j with Gibbs sampling
+  for (j in 1:m) {
+    Vj=solve( iSigma + t(X[[j]])%*%X[[j]]/s2 )
+    Ej=Vj%*%( iSigma%*%theta + t(X[[j]])%*%Y[[j]]/s2 )
+    BETA[j,]=rmvnorm(1,Ej,Vj) 
+  }
+  
+  
+  #'update s2
+  RSS=0 #residual sum of squared, la somma dei residui^2
+  for(j in 1:m) { RSS=RSS+sum( (Y[[j]]-X[[j]]%*%BETA[j,] )^2 ) } #residui^2=Reaction vero - Reaction previsto da OLS, tutto al quadrato
+  s2=1/rgamma(1,(nu0+sum(N))/2, (nu0*s20+RSS)/2 )
+  
+  #'update beta_j with MH
+  #dSigma<-det(Sigma) 
+  #for(j in 1:m) 
+  #{ 
+  #  beta.p<-t(rmvnorm(1,BETA[j ,],.5*Sigma)) 
+  #  
+  #  lr <-sum( dnorm(Y[[j]],beta.p, s2, log = TRUE) - dnorm(Y[[j]], BETA[j,],s2, log = TRUE) + ldmvnorm( t(beta.p),Sigma)  - ldmvnorm(t(BETA[j,]),Sigma))
+  #  if( log(runif(1)) < lr ) { BETA[ j ,]<- beta.p }
+  #}
+  
+  
+  #'results
+  if(s%%10==0) 
+  { 
+    #cat(s,s2,"\n")
+    S2.b<-c(S2.b,s2)
+    THETA.b<-rbind(THETA.b,t(theta))
+    Sigma.ps<-Sigma.ps+solve(iSigma) 
+    BETA.ps<-rbind(BETA.ps, BETA) #posterior
+    SIGMA.PS<-rbind(SIGMA.PS,c(solve(iSigma)))
+    BETA.pp<-rbind(BETA.pp,rmvnorm(1,theta,solve(iSigma)) )
+  }
+}
+
+```
+
+\begin{flushleft}
+At the end of the algorithm our posterior distribution of \textbf{$\beta$} are arranged according to the iterations so let's fixing to obtain a mean posterior estimate for each subject:
+\end{flushleft}
+
+```{r }
+#'obtaining posterior distribution of betas for each subject
+vect.subjects=as.numeric(names(table(dati$Subject)))
+BETA.ps[BETA.ps==0]=NA
+BETA.ps=BETA.ps[complete.cases(BETA.ps),]
+BETA.ps=data.frame(BETA.ps, subject=rep(vect.subjects, S))
+
+BETA.mean.subject=data.frame(b1=rep(NA, 18), b2=rep(NA, 18), b3=rep(NA, 18), subjects=vect.subjects)
+for (elem in vect.subjects) {
+  BETA.mean.subject[which(BETA.mean.subject$subjects==elem),]=colMeans(BETA.ps[which(BETA.ps$subject==elem),])  
+}
+
+
+#'obtaining posterior distribution of theta
+THETA.mean=apply(THETA.b, 2, mean)
+
+```
+
+
+\section{Model comparison}
+\begin{flushleft}
+Before plotting the comparison we have to use our bayesian estimates to predict the \textit{reaction time} for each \textit{day} then we can plot the models, but rememember that now our days are in a "continous" state in the variable \textit{days.cont}:
+\end{flushleft}
+```{r comparison}
+#'BETA
+bayes.pred=data.frame(matrix(NA, ncol = 18, nrow = 91)) 
+rownames(bayes.pred)=days.cont
+for (i in 1:m) {
+  bayes.pred[i]=BETA.mean.subject[i,1]+BETA.mean.subject[i,2]*days.cont+BETA.mean.subject[i,3]*(days.cont^2)
+}
+#'THETA
+bayes.theta.pred=THETA.mean[1]+THETA.mean[2]*days.cont+THETA.mean[3]*(days.cont^2)
+
+```
+\begin{flushleft}
+Well, now we have everything to plot both models and see if we have any differences.
+\end{flushleft}
+```{r, fig.height = 4, fig.width = 10}
+#### comparison between bayesian and frequentist model ####
+#'comparing bayesian hierarchial model with the frequentist one
+par(mfrow=c(1,2))
+
+subject.col <- c("#FF0000", "#00FF00", "#0000FF", "#FFFF00", "#FF00FF", "#00FFFF", "#000000", "#FFFFFF", "#FFA500", "#800080", "#008000", "#000080", "#FFC0CB", "#800000", "#808080", "#FFFFF0", "#F0FFF0", "#F0FFFF")
+plot(dati$Days, dati$Reaction, type="n", xlab = "Days", ylab = "Reaction", main = "Bayesian regressions")#, col=subject.col[dati$Subject])
+for(j in 1:m) {lines(days.cont, unlist(bayes.pred[j]), col=subject.col[j], lwd=1)}
+lines(days.cont, bayes.theta.pred, lwd=4)
+
+plot(dati$Days, dati$Reaction, type="n", xlab="Days", ylab = "Reaction", main="OLS regressions")#, col=subject.col[dati$Subject])
+for(j in 1:m) {lines(days.cont, react.pred.ols[[j]], col=subject.col[j], lwd=1)}
+react.pred.pooled=predict(ols.pooled, list(Days=days.cont, Days2= days.cont^2))
+lines(days.cont, react.pred.pooled, lwd=4)
+
+```
+
+\begin{flushleft}
+The dissimilarity are not so big but the "flattering" of the lines in the bayesian model coul be well appreciated, especially for the cyan line.
+Moreover from the results we can see how the hierarchial model allows the knowledge contamination across the individuals, pulling the regression lines to the posterior mean of \textbf{$\theta$} represented by the black line.
+Eventually it's possible to affirm that the model tends to "smooth" the big variation in reaction time: the large differences of reaction time due to lack of sleep showed by the OLS model are ridimensioned in the bayesian one. This effect can be noticed from the increased closeness of each lines to the others and from their nearness to the \textbf{$\theta$}'s line.
+\end{flushleft}
+
+
+\subsection{Prior and posterior of \textbf{$\theta$}}
+```{r fig.height = 4, fig.width = 10}
+## THETA ##
+par(mfrow=c(1,3), cex.main=0.6)
+#'prior of theta
+prior.theta=rmvnorm(1000, mu0, L0)
+#'posterior of theta
+#'THETA.b
+#'plot of theta1
+plot(density(prior.theta[,1]), xlim=range(prior.theta[,1]), ylim=c(0, 0.06), main="Prior and posterior distribution of theta1", xlab="theta1")
+lines(density(THETA.b[,1]), col="red")
+legend(175,0.05, legend = c("Prior", "Posterior"), col = c("black", "red"), lty = 1, cex = 0.8)
+#'plot of theta2
+plot(density(prior.theta[,2]), xlim=range(prior.theta[,2]), ylim=c(0, 0.15), main="Prior and posterior distribution of theta2", xlab="theta2")
+lines(density(THETA.b[,2]), col="red")
+legend(-30,0.12, legend = c("Prior", "Posterior"), col = c("black", "red"), lty = 1, cex = 0.8)
+#'plot of theta3
+plot(density(prior.theta[,3]), xlim=range(prior.theta[,3]), ylim=c(0, 1.2), main="Prior and posterior distribution of theta3", xlab = "theta3")
+lines(density(THETA.b[,3]), col="red")
+legend(-4,1, legend = c("Prior", "Posterior"), col = c("black", "red"), lty = 1, cex = 0.8)
+```
+
+
+\subsection{Prior and posterior of \textbf{$\Sigma$}}
+
+```{r fig.height = 4, fig.width = 10}
+## SIGMA ##
+#'prior of Sigma
+#'rWishart(rWishart(10000, eta0, solve(S0)) crea una lista di 10000 matrici 3x3
+mat=1/rWishart(1000, eta0, solve(S0))
+#'io sono interessato a creare una matrice dove le colonne sono V(beta1), v(beta2), V(beta3), 
+#'Cov(beta1, beta2), Cov(beta2, beta3), Cov(beta1, beta3)
+#'sono quindi interessato solamente a quelle 6 colonne, 
+#'ma essendo la 3x3 estraendo solamente quei valori otteniamo 9 colonne
+#'le eccessive 3 colonne sono quelle derivanti dall'angolo della matrice, 
+#'cioè le covarianze, e infatti sono uguali alle altre colonne 
+#'relative alla covarianza
+##
+#'l'ultima colonna è la varianza di beta3
+#'la penultima colonna è la covarianza tra beta3 e beta2
+#'la terzultima colonna è la covarianza tra beta3 e beta1
+#'la quarta colonna è la covarianza tra beta1 e beta2
+#'la prima colonna è la varianza di beta1
+#'la quinta colonna è la varianza di beta2
+prior.Sigma=matrix(mat, ncol = 9, byrow = TRUE)
+#'posterior of Sigma
+#'SIGMA.PS
+#'plot of beta1 variance
+par(mfrow=c(1,2))
+plot(density(prior.Sigma[,1]), main = "Prior distributon of V(beta1)")
+plot(density(SIGMA.PS[,1]), col="red", main = "Posterior distribution of V(beta1)")
+#'plot of beta2 variance
+par(mfrow=c(1,2))
+plot(density(prior.Sigma[,5]), main = "Prior distributon of V(beta2)")
+plot(density(SIGMA.PS[,5]), col="red", main = "Posterior distribution of V(beta2)")
+#'plot of beta3 variance
+par(mfrow=c(1,2))
+plot(density(prior.Sigma[,9]), main = "Prior distributon of V(beta3)")
+plot(density(SIGMA.PS[,9]), col="red", main = "Posterior distribution of V(beta3)")
+#'plot of beta1 and beta 2 covariance
+par(mfrow=c(1,2))
+plot(density(prior.Sigma[,4]), main = "Prior distributon of Cov(beta1, beta2)")
+plot(density(SIGMA.PS[,4]), col="red", main = "Posterior distribution of Cov(beta1, beta2)")
+#'plot of beta1 and beta3 covariance
+par(mfrow=c(1,2))
+plot(density(prior.Sigma[,7]), main = "Prior distributon of Cov(beta1, beta3)")
+plot(density(SIGMA.PS[,7]), col="red", main = "Posterior distribution of Cov(beta1, beta3)")
+#'plot of beta2 and beta 3 covariance
+par(mfrow=c(1,2))
+plot(density(prior.Sigma[,8]), main = "Prior distributon of Cov(beta2, beta3)")
+plot(density(SIGMA.PS[,8]), col="red", main = "Posterior distribution of Cov(beta2, beta3)")
+```
+
+
+\subsection{Prior and posterior of \textbf{$\beta$}}
+
+```{r fig.height = 4, fig.width = 10}
+## BETA ##
+#'prior of beta
+#'BETA.LS
+#'posterior of beta
+#'BETA.ps
+
+par(mfrow=c(1,3), cex.main=0.8)
+#'plot of prior and posterior of beta1
+plot(density(BETA.LS[,1]), main = "Prior and posterior distributon of beta1", ylim=c(0,0.02))
+lines(density(BETA.ps[,1]), col="red")
+legend(150,0.02, legend = c("Prior", "Posterior"), col = c("black", "red"), lty = 1, cex = 0.8)
+#'plot of prior and posterior of beta2
+plot(density(BETA.LS[,2]), main = "Prior and posterior distributon of beta2", ylim=c(0,0.08))
+lines(density(BETA.ps[,2]), col="red")
+legend(-30,0.06, legend = c("Prior", "Posterior"), col = c("black", "red"), lty = 1, cex = 0.8)
+#'plot of prior and posterior of beta3
+plot(density(BETA.LS[,3]), main = "Prior and posterior distributon of beta3", ylim=c(0,0.5))
+lines(density(BETA.ps[,3]), col="red")
+legend(-4,0.3, legend = c("Prior", "Posterior"), col = c("black", "red"), lty = 1, cex = 0.8)
+```
+
+\subsection{Posterior of \textbf{$\theta$} and predictive of \textbf{$\beta$}}
+
+```{r fig.height = 4, fig.width = 10}
+#### THETA VS PREDICTIVE BETA ####
+#plotting posterior of theta1 and predictive of beta1
+plot(density(THETA.b[,1]), main = "Posterior theta1 and predictive beta1", xlim=c(100,400))
+lines(density(BETA.pp[,1]), col="red")
+legend(150,0.04, legend = c("Posterior theta1", "Predictive beta1"), col = c("black", "red"), lty = 1, cex = 0.8)
+#plotting posterior of theta2 and predictive of beta2
+plot(density(THETA.b[,2]), main = "Posterior theta2 and predictive beta2", ylim=c(0,0.12), xlim=c(-50,50))
+lines(density(BETA.pp[,2]), col="red")
+legend(-30,0.06, legend = c("Posterior theta2", "Predictive beta2"), col = c("black", "red"), lty = 1, cex = 0.8)
+#plotting posterior of theta3 and predictive of beta3
+plot(density(THETA.b[,3]), main = "Posterior theta3 and predictive beta3", ylim=c(0,1.2), xlim=c(-6,6))
+lines(density(BETA.pp[,3]), col="red")
+legend(-4,0.6, legend = c("Posterior theta3", "Predictive beta3"), col = c("black", "red"), lty = 1, cex = 0.8)
+```
+
+
+\subsection{Diagnostics}
+
+```{r fig.height = 4, fig.width = 10}
+#THETA[,1]
+par(mfrow=c(1,2))
+plot(THETA.b[,1], type = "l", main="Theta1")
+hist(THETA.b[,1], main="Theta1")
+#THETA[,2]
+par(mfrow=c(1,2))
+plot(THETA.b[,2], type = "l", main="Theta2")
+hist(THETA.b[,2], main="Theta2")
+#THETA[,3]
+par(mfrow=c(1,2), cex.main=0.8)
+plot(THETA.b[,3], type = "l", main="Theta3")
+hist(THETA.b[,3], main="Theta3")
+#SIGMA[1,1]
+par(mfrow=c(1,2), cex.main=0.8)
+plot(SIGMA.PS[,1], type = "l", main="SIGMA[1,1]")
+hist(SIGMA.PS[,1], main="SIGMA[1,1]")
+#SIGMA[2,2]
+par(mfrow=c(1,2), cex.main=0.8)
+plot(SIGMA.PS[,5], type = "l", main="SIGMA[2,2]")
+hist(SIGMA.PS[,5], main="SIGMA[2,2]")
+#SIGMA[3,3]
+par(mfrow=c(1,2), cex.main=0.8)
+plot(SIGMA.PS[,9], type = "l", main="SIGMA[3,3]")
+hist(SIGMA.PS[,9], main="SIGMA[3,3]")
+#SIGMA[1,2]
+par(mfrow=c(1,2), cex.main=0.8)
+plot(SIGMA.PS[,4], type = "l", main="SIGMA[1,2]")
+hist(SIGMA.PS[,4], main="SIGMA[1,2]")
+#SIGMA[1,3]
+par(mfrow=c(1,2), cex.main=0.8)
+plot(SIGMA.PS[,7], type = "l", main="SIGMA[1,3]")
+hist(SIGMA.PS[,7], main="SIGMA[1,3]")
+#SIGMA[2,3]
+par(mfrow=c(1,2), cex.main=0.8)
+plot(SIGMA.PS[,8], type = "l", main="SIGMA[2,3]")
+hist(SIGMA.PS[,8], main="SIGMA[2,3]")
+
+```
+
+\newpage
+\subsection{Results}
+\begin{flushleft}
+We can discuss the results of this analysis starting from the \textbf{$\theta$} parameter, then \textbf{$\Sigma$} and eventually the \textbf{$\beta$}s.
+\end{flushleft}
+
+\begin{flushleft}
+Observing the section \textbf{Prior and posterior of $\theta$} we can see how theta has changed concentrating with less variance around a specified value. The mean of \textbf{$\theta$} is really close to the previous one but now there is less uncertainty about it, so the distribution changed its shape (becoming more peaky) but its location remains pretty much the same. This variation could be explained remembering what our prior is: the mean of the coefficients estimated by OLS, so we have an uncertainty measure (that's why prior is spread) that gain knowledge observing more specific data allowing its distribution to become more focused on a specific value.
+\end{flushleft}
+
+\begin{flushleft}
+The posterior variance of \textbf{$\beta$} doesn't change to much: is larger and shifted a little to the right for all the three parameters. The new shape and location of the distribution could means that observed data couldn't give us enough information to reduce the previous variance, but it's important to recall that we use exactly the covariance matrix of the OLS, so we are not surprised seeing just little changes. The analysis on the covariance terms shows us posterior distributions for \textbf{Cov($\beta_1$, $\beta_2$)} and \textbf{Cov($\beta_2$, $\beta_3$)} that likely assume negative values. Meanwhile the posterior distribution of \textbf{Cov($\beta_1$, $\beta_3$)} tends to stay on the positive part of the x-axis.  
+\end{flushleft}
+
+\begin{flushleft}
+What about \textbf{$\beta$}?
+As we can see in \textbf{Prior and posterior of $\beta$} the two distributions are pretty much the same. We can see a big difference in the intercept related plot, where the posterior become more sharp and thight, probably due to the big impact of this term in the analysis, that is the initial reaction time of each partecipant before starting the experiment. In the bayesian analysis we are trying to embrace heterogeneity across individuals and let them share information with other, so the intercept become more focused on a specified range. 
+Other interesting plots could be the ones in \textbf{Posterior of $\theta$ and predictive of $\beta$} where we see how each \textit{predictive distribution} of $\beta$ is more spread out than the respective \textit{posterior distribution} of $\theta$  representing the heterogeneity in intercept and slopes across the subjects.
+Observing just the population average we could come to wrong conclusions, but looking at the \textit{predictive distribution} of $\beta$ we should be able to rip them apart.
+For example watching the $\theta_1$ posterior we would like to think that intercept could assume only values around 250, but this is true only for the popolation average, indeed watching the possible values for each single $\beta_1$ we notice that possible values are in a bigger range than the previous, that is a new subject could have a initial reaction time really different from the ones expected from the population mean. About the slopes we can see the same stuff, even if majority of subjects will have a positive slope coefficient and consequentially they will see an increase in reaction time due to sleep deprivation, we could observe new subjects with negative slopes and therefore the inverse effect of what the population average said.
+\end{flushleft}
+
+\subsection{Conclusion}
+\begin{flushleft}
+In this analysis we tried studying the short-term effect of sleep deprivation on reaction time using the data of \textit{Belenki et al (2003)}.
+We realized that each subject responds differently and decided that this heterogeneity across individuals should be included in the model.
+Through the bayesian approach we were able to fit a model that allows for contamination among subjects, exploits their shared information and manages the uncertainty in a better way, resulting in a more realistic manner of representing the variability of the parameters.
+Surely the use of a different prior, maybe with some domain knowledge, could have led to more accurate results. As a matter of facts we use OLS to set priors and this corresponds to a weakly informative prior, so the data are more influential than our prior and eventually the differences between the bayesian and the OLS model are not so huge in terms of parameter estimation's values, but they are according to their variability, which can be seen through the study of posterior distribution.  
+The number of observations weren't really huge and the bayesian approach allowed us to add some uncertainty around them, embracing the variety of each individuals and gaining strength from that. The power of bayesian statistics would be more evident if some subject will have fewer observation, because we would have been able to obtain information from the other individuals and give it to them.
+\end{flushleft}
